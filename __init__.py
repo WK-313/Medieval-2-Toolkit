@@ -4,7 +4,7 @@ bl_info = {
     "author" : "WK",
     "description" : "Bulk import models",
     "blender" : (4, 0, 0),
-    "version" : (0, 8, 26, 7),
+    "version" : (0, 8, 28, 7),
     "location" : "",
     "warning" : "",
     "category" : "Generic"

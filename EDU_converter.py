@@ -85,11 +85,7 @@ def unit_reader(mod_folder):
                 flag = 0
         # if armour upgrade models line, get the last entry as the model name
         elif("armour_ug_models" in line):
-<<<<<<< Updated upstream
-            unit_model = line.split()[-1]
-=======
             unit_model = line.replace(",", "").split()[1:]
->>>>>>> Stashed changes
         # if era 0 line, get all the entries as owners
         elif("era 0" in line):
             unit_owners = line.replace(",", "").split()[2:]
