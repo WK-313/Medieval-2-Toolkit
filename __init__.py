@@ -60,11 +60,12 @@ class MEDIMPORTER_OT_Properties(bpy.types.PropertyGroup):
         factions = pickle.load(import_factions_input)
     with open(script_folder/('text/master_dictionary.pkl'), 'rb') as master_input:
         master_dictionary = pickle.load(master_input)
-    import_faction: bpy.props.EnumProperty(name = "", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
-    import_faction_single: bpy.props.EnumProperty(name = "", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
-    import_unit: bpy.props.EnumProperty(name = "", description = "Select Unit", items = Sort_By_Faction)
+    import_faction: bpy.props.EnumProperty(name = "Faction list", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
+    import_faction_single: bpy.props.EnumProperty(name = "Faction list", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
+    import_unit: bpy.props.EnumProperty(name = "Unit list", description = "Select Unit", items = Sort_By_Faction)
     upg_model: bpy.props.IntProperty(name="Upgrade tier", description = "Select armour upgrade level", default = 0, min = 0, max = 3)
     upg_model_single: bpy.props.IntProperty(name="Upgrade tier", description = "Select armour upgrade level", default = 0, min = 0, max = 3)
+    controller_type: bpy.props.EnumProperty(name="IK type", description = "Select armour upgrade level", items = [(entry, entry, "") for entry in ["IK_Infantry", "IK_Archer", "IK_Dwarf"]])
 
 class MEDIMPORTER_PT_Toolkit(bpy.types.Panel):
     bl_idname = "MEDIMPORTER_PT_Toolkit"
@@ -132,8 +133,8 @@ class MEDIMPORTER_PT_Importer(bpy.types.Panel):
             col.operator ("med2toolkit.importer", text="Import Faction")
             layout.label(text = "Import Single Unit")
             col = self.layout.column(align=True)
-            col.prop (context.scene.med2_tools, "import_faction_single", text="Faction")
-            col.prop (context.scene.med2_tools, "import_unit", text="Unit")
+            col.prop (context.scene.med2_tools, "import_faction_single", text="")
+            col.prop (context.scene.med2_tools, "import_unit", text="")
             col.prop (context.scene.med2_tools, "upg_model_single", text="Armour upgrade level:")
             col.operator ("med2toolkit.singe_importer", text="Import Unit")
 
@@ -179,6 +180,27 @@ class MEDIMPORTER_PT_Misc(bpy.types.Panel):
             col = self.layout.column(align=True)
             col.prop (context.scene.med2_tools, "directory_strat", text="")
             col.operator("med2toolkit.strat", text="Import strat models")
+            layout=self.layout
+            layout.label(text = "Generate IK controller")
+            col = self.layout.column(align=True)
+            col.prop (context.scene.med2_tools, "controller_type", text="")
+            col.operator("med2toolkit.controller", text="Generate IK controller")
+
+
+class MEDIMPORTER_OT_Controller(bpy.types.Operator):
+    bl_idname = "med2toolkit.controller"
+    bl_label = "Randomize unit variations for the selection"
+    bl_options = {"REGISTER", "UNDO"}
+    @classmethod
+    def poll(cls, context):
+        if len(context.selected_objects) == 0: return False
+        elif len(context.selected_objects) > 1: return False
+        return context.object.select_get() and context.object.type == 'ARMATURE'
+
+    def execute(self, context):
+        EDU_converter.create_controller(context.scene.med2_tools.controller_type)
+        return{"FINISHED"}  
+
 
 
 class MEDIMPORTER_OT_Randomizer(bpy.types.Operator):
@@ -224,6 +246,7 @@ classes = [
     MEDIMPORTER_PT_Misc,
     MEDIMPORTER_OT_Reader,
     MEDIMPORTER_OT_Importer,
+    MEDIMPORTER_OT_Controller,
     MEDIMPORTER_OT_Randomizer,
     MEDIMPORTER_OT_Renderer,
     MEDIMPORTER_OT_Single_Importer,

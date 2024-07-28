@@ -564,6 +564,30 @@ def transfer_armature(armature, obj_controller):
     bpy.ops.object.mode_set(mode='OBJECT',toggle=True)
 
 
+def create_controller(controller_type):
+    #generate IK controls if defined
+    armature = bpy.context.view_layer.objects.active
+    x = armature.location.x
+    y = armature.location.y
+    z = armature.location.z
+    if controller_type  == "IK_Infantry":
+        obj_controller = IK_2H.IKGenerator(armature.name, x, y, z)
+        transfer_armature(armature, obj_controller)
+        armature.parent = obj_controller
+        armature.matrix_parent_inverse = obj_controller.matrix_world.inverted()
+    elif controller_type  == "IK_Archer":
+        obj_controller = IK_Archer.IKGenerator(armature.name, x, y, z)
+        transfer_armature(armature, obj_controller)
+        armature.parent = obj_controller
+        armature.matrix_parent_inverse = obj_controller.matrix_world.inverted()
+    elif controller_type  == "IK_Dwarf":
+        obj_controller = IK_Dwarf.IKGenerator(armature.name, x, y, z)
+        transfer_armature(armature, obj_controller)
+        armature.parent = obj_controller
+        armature.matrix_parent_inverse = obj_controller.matrix_world.inverted()
+    else:
+        print("Undefined IK type. Accepted types are: IK_1H, IK_2H and IK_Archer")
+
 #Check the comments of the model names and hide variations
 def hide_variations():
     for parent_object in bpy.context.selected_objects:
