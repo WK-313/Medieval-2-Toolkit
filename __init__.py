@@ -63,12 +63,8 @@ class MEDIMPORTER_OT_Properties(bpy.types.PropertyGroup):
     import_faction: bpy.props.EnumProperty(name = "", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
     import_faction_single: bpy.props.EnumProperty(name = "", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
     import_unit: bpy.props.EnumProperty(name = "", description = "Select Unit", items = Sort_By_Faction)
-<<<<<<< Updated upstream
-
-=======
     upg_model: bpy.props.IntProperty(name="Upgrade tier", description = "Select armour upgrade level", default = 0, min = 0, max = 3)
     upg_model_single: bpy.props.IntProperty(name="Upgrade tier", description = "Select armour upgrade level", default = 0, min = 0, max = 3)
->>>>>>> Stashed changes
 
 class MEDIMPORTER_PT_Toolkit(bpy.types.Panel):
     bl_idname = "MEDIMPORTER_PT_Toolkit"
