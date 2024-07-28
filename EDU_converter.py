@@ -43,7 +43,7 @@ def unit_reader(mod_folder):
     master_dictionary = []
     unit_name = "sample_name"
     unit_mount = ["sample_mount"]
-    unit_model = "sample_model"
+    unit_model = ["sample_model"]
     unit_owners = ["sample_faction"]
     unit_card_dir = ["sample_folder"]
     flag = 0
@@ -54,7 +54,7 @@ def unit_reader(mod_folder):
             master_dictionary.append(unit_dictionary)
             unit_name = "missing"
             unit_mount = ["missing"]
-            unit_model = "missing"
+            unit_model = []
             unit_owners = ["missing"]
             unit_card_dir = []
             riders = []
@@ -85,7 +85,11 @@ def unit_reader(mod_folder):
                 flag = 0
         # if armour upgrade models line, get the last entry as the model name
         elif("armour_ug_models" in line):
+<<<<<<< Updated upstream
             unit_model = line.split()[-1]
+=======
+            unit_model = line.replace(",", "").split()[1:]
+>>>>>>> Stashed changes
         # if era 0 line, get all the entries as owners
         elif("era 0" in line):
             unit_owners = line.replace(",", "").split()[2:]
@@ -95,7 +99,6 @@ def unit_reader(mod_folder):
             unit_card_dir.append(line.split()[1])
         elif("recruit_priority_offset" in line and flag != 1):
             unit_card_dir = unit_owners
-    # print last entry
     unit_dictionary = {"name": unit_name, "mount": unit_mount, "model": unit_model, "factions": unit_owners, "card": unit_card_dir}
     master_dictionary.append(unit_dictionary)
     return(master_dictionary)
@@ -199,33 +202,58 @@ def sort_bmdb(mod_folder):
 
 def find_model(master_dictionary, bmdb_list, model_list):
     # search for model name in the line
-    for entry in master_dictionary:
-        flag = 0
+    for unit in master_dictionary:
+        for count, x in enumerate(unit['model']):
+            print(unit['model'][count])
+            flag = 0
+            for line in bmdb_list:
+                if(unit['model'][count].lower() in line.lower().split() and "/" not in line):
+                    flag = 1
+                elif(flag == 1 and ".mesh" in line):
+                    unit['model'][count] = re.sub(".*/|.mesh.*", "", line)+".dae"
+                    break
+            for line in model_list:
+                if(unit['model'][count] == line[0]):
+                    unit['model'][count] = line
+                    break
         for line in bmdb_list:
-            if(entry["model"].lower() in line.lower().split() and "/" not in line):
-                flag = 1
-            elif(flag == 1 and ".mesh" in line):
-                entry["model"] = re.sub(".*/|.mesh.*", "", line)+".dae"
-                break
-        for line in bmdb_list:
-            if(entry["mount"][0] != "missing" and entry["mount"][0].lower() in line.lower() and "/" not in line):
+            if(unit["mount"][0] != "missing" and unit["mount"][0].lower() in line.lower() and "/" not in line):
                 flag = 2
             elif(flag == 2 and ".mesh" in line):
-                entry["mount"][0] = re.sub(".*/|.mesh.*", "", line)+".dae"
-                break
-        # Search the model from the list and append the texture info
-        for line in model_list:
-            if(entry["model"] == line[0]):
-                entry["model"] = line
+                unit["mount"][0] = re.sub(".*/|.mesh.*", "", line)+".dae"
                 break
         for line in model_list:
-            if(entry["mount"][0] == line[0]):
-                entry["mount"][0] = line
+            if(unit["mount"][0] == line[0]):
+                unit["mount"][0] = line
                 break
+    # for entry in master_dictionary:
+    #     flag = 0
+    #     for line in bmdb_list:
+    #         if(entry["model"][0].lower() in line.lower().split() and "/" not in line):
+    #             flag = 1
+    #         elif(flag == 1 and ".mesh" in line):
+    #             entry["model"][0] = re.sub(".*/|.mesh.*", "", line)+".dae"
+    #             break
+    #     for line in bmdb_list:
+    #         if(entry["mount"][0] != "missing" and entry["mount"][0].lower() in line.lower() and "/" not in line):
+    #             flag = 2
+    #         elif(flag == 2 and ".mesh" in line):
+    #             entry["mount"][0] = re.sub(".*/|.mesh.*", "", line)+".dae"
+    #             break
+    #     # Search the model from the list and append the texture info
+    #     for line in model_list:
+    #         if(entry["model"][0] == line[0]):
+    #             entry["model"][0] = line
+    #             break
+    #     for line in model_list:
+    #         if(entry["mount"][0] == line[0]):
+    #             entry["mount"][0] = line
+    #             break
+        print(unit)
     return(master_dictionary)
 
 
-def importer(model_folder, import_faction, x ,y ,z):
+def importer(model_folder, import_faction, x ,y ,z, upg_target):
     #Check for camera collection. Create if missing
     test = bpy.data.collections.get("Camera")
     if test == None:
@@ -245,11 +273,11 @@ def importer(model_folder, import_faction, x ,y ,z):
         if any (owner == import_faction for owner in entry["factions"]):
             print(entry)
             if entry['mount'][0] != "missing":
-                if  mount_importer(model_folder, entry, import_faction, x, y, z) == 2:
+                if  mount_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
                     x += 2
                     imported_units.append(entry)
             elif entry['mount'][0] == "missing":
-                if infantry_importer(model_folder, entry, import_faction, x, y, z) == 2:
+                if infantry_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
                     x+= 2
                     imported_units.append(entry)
     with open(script_folder/('text/imported_units.pkl'), 'wb') as imported_units_output:
@@ -259,27 +287,32 @@ def importer(model_folder, import_faction, x ,y ,z):
     bpy.context.view_layer.active_layer_collection = bpy.context.view_layer.layer_collection
 
 
-def single_importer(model_folder, import_faction, import_unit, x ,y ,z):
+def single_importer(model_folder, import_faction, import_unit, x ,y ,z, upg_target):
     with open(script_folder/('text/master_dictionary.pkl'), 'rb') as master_input:
         master_dictionary = pickle.load(master_input)
     for entry in master_dictionary:
         if import_unit == entry["name"]:
             if entry['mount'][0] != "missing":
-                if  mount_importer(model_folder, entry, import_faction, x, y, z) == 2:
+                if  mount_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
                     x += 2
             elif entry['mount'][0] == "missing":
-                if infantry_importer(model_folder, entry, import_faction, x, y, z) == 2:
+                if infantry_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
                     x+= 2
             break
     if x >0: print("Succesfully imported", import_unit)
 
 
-def infantry_importer(folder, dae_model, import_faction, x, y, z):
+def infantry_importer(folder, dae_model, import_faction, x, y, z, upg_target):
+    print(dae_model)
     texture_path = folder+('textures/')
     #Define keywords
-    model = dae_model['model'][0]
+    try:
+        model = dae_model['model'][upg_target][0]
+    except IndexError:
+        upg_target = len(dae_model['model'])-1
+        model = dae_model['model'][upg_target][0]
     texture_flag = 0
-    for entry in dae_model['model'][1]:
+    for entry in dae_model['model'][upg_target][1]:
         print(entry)
         if entry[0] == import_faction:
             main_texture = entry[1]
@@ -303,7 +336,7 @@ def infantry_importer(folder, dae_model, import_faction, x, y, z):
         armature.location = (x, y, z)
         #generate IK controls if defined
         try:
-            IKType = dae_model['model'][2]
+            IKType = dae_model['model'][upg_target][2]
             if IKType in Controller_2H:
                 obj_controller = IK_2H.IKGenerator(armature.name, x, y, z)
                 transfer_armature(armature, obj_controller)
@@ -340,7 +373,7 @@ def infantry_importer(folder, dae_model, import_faction, x, y, z):
                 material.name = main_texture.replace(".dds", "")
                 material_workflow(texture_path, model, main_texture, main_normal, material)
             texture_flag = 0
-            for entry in dae_model['model'][1]:
+            for entry in dae_model['model'][upg_target][1]:
                 if entry[0] == import_faction:
                     attachment_texture = entry[3]
                     attachment_normal = entry[4]
@@ -372,7 +405,7 @@ def infantry_importer(folder, dae_model, import_faction, x, y, z):
         return(2)
 
 
-def mount_importer(folder, dae_model, import_faction, x, y, z):
+def mount_importer(folder, dae_model, import_faction, x, y, z, upg_target):
     texture_path = folder+('textures/')
     #Define keywords
     mount = dae_model['mount'][0][0]
@@ -434,7 +467,7 @@ def mount_importer(folder, dae_model, import_faction, x, y, z):
         hide_variations()
         multi_textured_check()
         for rider in dae_model['mount'][1]:
-            infantry_importer(folder, dae_model, import_faction, x+float(rider[0]), y+float(rider[2]), z+float(rider[1]))
+            infantry_importer(folder, dae_model, import_faction, x+float(rider[0]), y+float(rider[2]), z+float(rider[1]), upg_target)
         return(2)
 
 

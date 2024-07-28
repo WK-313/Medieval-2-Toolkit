@@ -25,13 +25,12 @@ def Read_Mod(directory):
     EDU_converter.mod_reader(bpy.path.abspath(directory))
 
 
-def Import_Faction(import_faction, directory):
-    EDU_converter.importer(bpy.path.abspath(directory), import_faction, 0, 0, 1)
+def Import_Faction(import_faction, directory, upg_model):
+    EDU_converter.importer(bpy.path.abspath(directory), import_faction, 0, 0, 1, upg_model)
 
 
-def Sort_By_Owner(import_faction, import_unit, directory):
-    #print(import_faction, import_unit)
-    EDU_converter.single_importer(bpy.path.abspath(directory), import_faction, import_unit, 0, 0, 1)
+def Import_Unit(import_faction, import_unit, directory, upg_model):
+    EDU_converter.single_importer(bpy.path.abspath(directory), import_faction, import_unit, 0, 0, 1, upg_model)
 
 
 def Sort_By_Faction(self, context):
@@ -64,7 +63,12 @@ class MEDIMPORTER_OT_Properties(bpy.types.PropertyGroup):
     import_faction: bpy.props.EnumProperty(name = "", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
     import_faction_single: bpy.props.EnumProperty(name = "", description = "Select Faction", items = [(entry, entry, "") for entry in factions])
     import_unit: bpy.props.EnumProperty(name = "", description = "Select Unit", items = Sort_By_Faction)
+<<<<<<< Updated upstream
 
+=======
+    upg_model: bpy.props.IntProperty(name="Upgrade tier", description = "Select armour upgrade level", default = 0, min = 0, max = 3)
+    upg_model_single: bpy.props.IntProperty(name="Upgrade tier", description = "Select armour upgrade level", default = 0, min = 0, max = 3)
+>>>>>>> Stashed changes
 
 class MEDIMPORTER_PT_Toolkit(bpy.types.Panel):
     bl_idname = "MEDIMPORTER_PT_Toolkit"
@@ -128,11 +132,13 @@ class MEDIMPORTER_PT_Importer(bpy.types.Panel):
             col = self.layout.column(align=True)
             col.prop (context.scene.med2_tools, "directory_units", text="")
             col.prop (context.scene.med2_tools, "import_faction", text="")
+            col.prop (context.scene.med2_tools, "upg_model", text="Armour upgrade level:")
             col.operator ("med2toolkit.importer", text="Import Faction")
             layout.label(text = "Import Single Unit")
             col = self.layout.column(align=True)
             col.prop (context.scene.med2_tools, "import_faction_single", text="Faction")
             col.prop (context.scene.med2_tools, "import_unit", text="Unit")
+            col.prop (context.scene.med2_tools, "upg_model_single", text="Armour upgrade level:")
             col.operator ("med2toolkit.singe_importer", text="Import Unit")
 
 
@@ -143,7 +149,7 @@ class MEDIMPORTER_OT_Importer(bpy.types.Operator):
 
     def execute(self, context):
         inputs = context.scene.med2_tools
-        Import_Faction(context.scene.med2_tools.import_faction, context.scene.med2_tools.directory_units)
+        Import_Faction(context.scene.med2_tools.import_faction, context.scene.med2_tools.directory_units, context.scene.med2_tools.upg_model)
         return{"FINISHED"}
 
 
@@ -154,7 +160,7 @@ class MEDIMPORTER_OT_Single_Importer(bpy.types.Operator):
 
     def execute(self, context):
         inputs = context.scene.med2_tools
-        Sort_By_Owner(context.scene.med2_tools.import_faction_single, context.scene.med2_tools.import_unit, context.scene.med2_tools.directory_units)
+        Import_Unit(context.scene.med2_tools.import_faction_single, context.scene.med2_tools.import_unit, context.scene.med2_tools.directory_units, context.scene.med2_tools.upg_model_single)
         return{"FINISHED"}
  
 
