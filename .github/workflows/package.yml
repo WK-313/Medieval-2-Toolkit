@@ -4,11 +4,12 @@ on: [push]
 jobs:
   create-addon:
     runs-on: ubuntu-latest
-  steps:
-  - name: Build Blender Addon
-    uses: BlenderKit/blender-addon-build-action@v1
-    with:
-      name: 'Medieval-2-Toolkit'
-      build-location: './build'
-      do-checkout: 'true'
-      exclude-files: '.git;.github;.gitignore'
+    steps:
+        # Zip up the addon
+      - name: Build Blender Addon
+        uses: BlenderKit/blender-addon-build-action@v1
+        with:
+          name: 'Medieval-2-Toolkit'
+          build-location: './build'
+          do-checkout: 'true'
+          exclude-files: '.git;.github;.gitignore'
