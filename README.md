@@ -1,17 +1,20 @@
 # Medieval 2: Total War - Blender Toolkit
 This Blender addon provides a wide variety of tools to assist you in creating content for Medieval II: Total War
 
-[![Build Status](https://img.shields.io/github/downloads/WK-313/Medieval-2-Toolkit/total?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases)
+
 [![Build Status](https://img.shields.io/github/v/release/WK-313/Medieval-2-Toolkit?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases)
+
+[![Build Status](https://img.shields.io/github/downloads/WK-313/Medieval-2-Toolkit/total?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases)
+
 
 ## Table of Contents
 - [Medieval 2: Total War - Blender Toolkit](#medieval-2-total-war-blender-toolkit)
-   * [Current Features](#current-features)
-   * [Usage Instructions](#usage-instructions)
-   * [Installation Instructions](#installation-instructions)
+   * [Features](#features)
+   * [Usage](#usage)
+   * [Installation](#installation)
    * [Credits](#credits)
 
-## Current Features
+## Features
 - Batch import units from an entire faction
 - Import single units
 - Batch import strategy .cas models
@@ -22,11 +25,22 @@ This Blender addon provides a wide variety of tools to assist you in creating co
 
 ![alt text](./images/readme3.png)
 
-## [Usage Instructions](https://docs.google.com/document/d/1sjLq0buiZpiRU4AwekeG9lYVo7wYgm7mhbN25glYwIc)
+## [Usage](https://docs.google.com/document/d/1sjLq0buiZpiRU4AwekeG9lYVo7wYgm7mhbN25glYwIc)
 For usage instructions, please refer to this [Google Doc](https://docs.google.com/document/d/1sjLq0buiZpiRU4AwekeG9lYVo7wYgm7mhbN25glYwIc)
 
-## Installation Instructions
+## Installation
+
+## 1. Download the release
 ![alt text](./images/readme1.png)
+
+## 2. Install the addon
+Point it at the downloaded .zip file
+
+![alt text](./images/readme4.png)
+
+## 3. Enable the addon
+Enable `Medieval 2 Toolkit`
+![alt text](./images/readme5.png)
 
 ## Credits
 - `WK | Kautto Ville`
