@@ -1,0 +1,14 @@
+name: Create Medieval-2-Toolkit Blender addon
+run-name: Built by:${{ github.actor }}
+on: [push]
+jobs:
+  create-addon:
+    runs-on: ubuntu-latest
+  steps:
+  - name: Build Blender Addon
+    uses: BlenderKit/blender-addon-build-action@v1
+    with:
+      name: 'Medieval-2-Toolkit'
+      build-location: './build'
+      do-checkout: 'true'
+      exclude-files: '.git;.github;.gitignore'
