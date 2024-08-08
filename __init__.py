@@ -16,7 +16,7 @@ import sys
 import pickle
 from bpy.props import StringProperty, BoolProperty
 from bpy_extras.io_utils import ImportHelper
-from . import EDU_converter, strat_import
+from . import EDU_converter, strat_import, single_import
 from pathlib import Path
 script_folder = Path(__file__).parent
 
@@ -51,10 +51,15 @@ def Import_Strat(directory):
     strat_import.strat_importer(bpy.path.abspath(directory))
 
 
+def Import_Single_Dae(directory):
+    single_import.single_importer(bpy.path.abspath(directory))
+
+
 class MEDIMPORTER_OT_Properties(bpy.types.PropertyGroup):
     directory_mod: StringProperty(name = "Mod data folder", description = "Directory to read mod data from", default = "C:\\Program Files", subtype = "DIR_PATH")
     directory_units: StringProperty(name = "Units folder", description = "Directory to get unit models from", default = "C:\\Program Files", subtype = "DIR_PATH")
     directory_strat: StringProperty(name = "Strat folder", description = "Directory to get strat models from", default = "C:\\Program Files", subtype = "DIR_PATH")
+    directory_single_dae: StringProperty(name = "Settlement .dae", description = "Directory to get strat models from", default = "C:\\Program Files", subtype = "FILE_PATH")
 
     with open(script_folder/('text/available_factions.pkl'), 'rb') as import_factions_input:
         factions = pickle.load(import_factions_input)
@@ -72,7 +77,7 @@ class MEDIMPORTER_PT_Toolkit(bpy.types.Panel):
     bl_label = "Medieval 2 Toolkit"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Batch Import"
+    bl_category = "Med2 Toolkit"
 
     def draw(self, context):
         if(context.mode == 'OBJECT'):
@@ -85,7 +90,7 @@ class MEDIMPORTER_PT_Mod_Data(bpy.types.Panel):
     bl_label = "Mod Data"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Batch Import"
+    bl_category = "Med2 Toolkit"
 
     def draw(self, context):
         if(context.mode == 'OBJECT'):
@@ -120,7 +125,7 @@ class MEDIMPORTER_PT_Importer(bpy.types.Panel):
     bl_label = "Import Units"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Batch Import"
+    bl_category = "Med2 Toolkit"
 
     def draw(self, context):
         if(context.mode == 'OBJECT'):
@@ -167,7 +172,7 @@ class MEDIMPORTER_PT_Misc(bpy.types.Panel):
     bl_label = "Misc."
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Batch Import"
+    bl_category = "Med2 Toolkit"
 
     def draw(self, context):
         if(context.mode == 'OBJECT'):
@@ -180,6 +185,11 @@ class MEDIMPORTER_PT_Misc(bpy.types.Panel):
             col = self.layout.column(align=True)
             col.prop (context.scene.med2_tools, "directory_strat", text="")
             col.operator("med2toolkit.strat", text="Import strat models")
+            layout=self.layout
+            layout.label(text = "Import Settlement")
+            col = self.layout.column(align=True)
+            col.prop (context.scene.med2_tools, "directory_single_dae", text="")
+            col.operator("med2toolkit.single_dae", text="Import Settlement")
             layout=self.layout
             layout.label(text = "Generate IK controller")
             col = self.layout.column(align=True)
@@ -237,6 +247,16 @@ class MEDIMPORTER_OT_Strat(bpy.types.Operator):
         return{"FINISHED"}
 
 
+class MEDIMPORTER_OT_Single_Dae(bpy.types.Operator):
+    bl_idname = "med2toolkit.single_dae"
+    bl_label = "Select .dae File"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        Import_Single_Dae(context.scene.med2_tools.directory_single_dae)
+        return{"FINISHED"}
+
+
 classes = [
     MEDIMPORTER_PT_Toolkit,
     MEDIMPORTER_OT_Sorter,
@@ -251,6 +271,7 @@ classes = [
     MEDIMPORTER_OT_Renderer,
     MEDIMPORTER_OT_Single_Importer,
     MEDIMPORTER_OT_Strat,
+    MEDIMPORTER_OT_Single_Dae,
     ]
 
 def register():
