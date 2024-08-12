@@ -40,8 +40,13 @@ def unit_reader(mod_folder):
     with open((mod_folder+'descr_mount.txt'), 'r', encoding="utf8") as mount:
         lines = mount.readlines()
         mount_lines = [line.rstrip() for line in lines if line[0] != ';']
+    # open engines
+    with open((mod_folder+'descr_engines.txt'), 'r', encoding="utf8") as engines:
+        lines = engines.readlines()
+        engines_lines = [line.rstrip() for line in lines if line[0] != ';']
     master_dictionary = []
     unit_name = "sample_name"
+    unit_engine = ["missing"]
     unit_mount = ["sample_mount"]
     unit_model = ["sample_model"]
     unit_owners = ["sample_faction"]
@@ -50,9 +55,10 @@ def unit_reader(mod_folder):
     # if dictionary line, start a new group
     for line in edu_lines:
         if("dictionary" in line):
-            unit_dictionary = {"name": unit_name, "mount": unit_mount, "model": unit_model, "factions": unit_owners, "card": unit_card_dir}
+            unit_dictionary = {"name": unit_name, "engine": unit_engine, "mount": unit_mount, "model": unit_model, "factions": unit_owners, "card": unit_card_dir}
             master_dictionary.append(unit_dictionary)
             unit_name = "missing"
+            unit_engine = ["missing"]
             unit_mount = ["missing"]
             unit_model = []
             unit_owners = ["missing"]
@@ -65,7 +71,6 @@ def unit_reader(mod_folder):
             unit_mount = [line.split(maxsplit = 1)[1]]
             x = 1
             flag = 0
-            rider_amount = 0
             for line in mount_lines:
                 if("type" in line and unit_mount[0].lower() in line.lower() and flag == 0):
                     flag = 1
@@ -83,7 +88,27 @@ def unit_reader(mod_folder):
             if(flag == 2 and riders != []):
                 unit_mount.append(riders)
                 flag = 0
-        # if armour upgrade models line, get the last entry as the model name
+        # if engine line, search for the mount name and get model
+        elif("engine" in line.split()):
+            unit_engine = [line.split(maxsplit = 1)[1]]
+            x = 1
+            flag = 0
+            for line in engines_lines:
+                if("type" in line and unit_engine[0].lower() in line.lower() and flag == 0):
+                    unit_engine = [line.split()[1]+".dae"]
+                    flag = 1
+                # get engineer offsets
+                elif("engine_radius" in line and flag == 1):
+                    x_offset = float(line.split()[1])/2
+                    flag = 2
+                elif("engine_dock_dist" in line and flag == 2):
+                    y_offset = float(line.split()[1])
+                    riders.append([x_offset, -y_offset, 0])
+                    riders.append([-x_offset, -y_offset, 0])
+                    unit_engine.append(riders)
+                    flag = 0
+                    break
+        # if armour upgrade models line, get upagrade models
         elif("armour_ug_models" in line):
             unit_model = line.replace(",", "").split()[1:]
         # if era 0 line, get all the entries as owners
@@ -95,7 +120,7 @@ def unit_reader(mod_folder):
             unit_card_dir.append(line.split()[1])
         elif("recruit_priority_offset" in line and flag != 1):
             unit_card_dir = unit_owners
-    unit_dictionary = {"name": unit_name, "mount": unit_mount, "model": unit_model, "factions": unit_owners, "card": unit_card_dir}
+    unit_dictionary = {"name": unit_name, "engine": unit_engine, "mount": unit_mount, "model": unit_model, "factions": unit_owners, "card": unit_card_dir}
     master_dictionary.append(unit_dictionary)
     return(master_dictionary)
 
@@ -222,29 +247,6 @@ def find_model(master_dictionary, bmdb_list, model_list):
             if(unit["mount"][0] == line[0]):
                 unit["mount"][0] = line
                 break
-    # for entry in master_dictionary:
-    #     flag = 0
-    #     for line in bmdb_list:
-    #         if(entry["model"][0].lower() in line.lower().split() and "/" not in line):
-    #             flag = 1
-    #         elif(flag == 1 and ".mesh" in line):
-    #             entry["model"][0] = re.sub(".*/|.mesh.*", "", line)+".dae"
-    #             break
-    #     for line in bmdb_list:
-    #         if(entry["mount"][0] != "missing" and entry["mount"][0].lower() in line.lower() and "/" not in line):
-    #             flag = 2
-    #         elif(flag == 2 and ".mesh" in line):
-    #             entry["mount"][0] = re.sub(".*/|.mesh.*", "", line)+".dae"
-    #             break
-    #     # Search the model from the list and append the texture info
-    #     for line in model_list:
-    #         if(entry["model"][0] == line[0]):
-    #             entry["model"][0] = line
-    #             break
-    #     for line in model_list:
-    #         if(entry["mount"][0] == line[0]):
-    #             entry["mount"][0] = line
-    #             break
         print(unit)
     return(master_dictionary)
 
@@ -268,7 +270,11 @@ def importer(model_folder, import_faction, x ,y ,z, upg_target):
     for entry in master_dictionary:
         if any (owner == import_faction for owner in entry["factions"]):
             print(entry)
-            if entry['mount'][0] != "missing":
+            if entry['engine'][0] != "missing":
+                if engine_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
+                    x += 2
+                    imported_units.append(entry)
+            elif entry['mount'][0] != "missing":
                 if  mount_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
                     x += 2
                     imported_units.append(entry)
@@ -288,7 +294,10 @@ def single_importer(model_folder, import_faction, import_unit, x ,y ,z, upg_targ
         master_dictionary = pickle.load(master_input)
     for entry in master_dictionary:
         if import_unit == entry["name"]:
-            if entry['mount'][0] != "missing":
+            if entry['engine'][0] != "missing":
+                if engine_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
+                    x += 2
+            elif entry['mount'][0] != "missing":
                 if  mount_importer(model_folder, entry, import_faction, x, y, z, upg_target) == 2:
                     x += 2
             elif entry['mount'][0] == "missing":
@@ -464,6 +473,89 @@ def mount_importer(folder, dae_model, import_faction, x, y, z, upg_target):
         multi_textured_check()
         for rider in dae_model['mount'][1]:
             infantry_importer(folder, dae_model, import_faction, x+float(rider[0]), y+float(rider[2]), z+float(rider[1]), upg_target)
+        return(2)
+
+
+def engine_importer(folder, dae_model, import_faction, x, y, z, upg_target):
+    texture_path = folder+('textures//')
+    #Define keywords
+    engine = dae_model['engine'][0]
+    #Print line if model doesn't exist
+    file_check = Path(str(folder)+engine)
+    if not file_check.exists():
+        print("No mount file found:\n"+engine)
+        return(0)
+    else:
+        bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
+        #Import .dae files, rename armatures and move the new objects
+        bpy.ops.wm.collada_import(filepath=(folder+engine))
+        armature = bpy.data.objects["Armature"]
+        armature.name = engine.replace("_lod0.dae", "")
+        armature.location = (x, y, z-1)
+            
+        for mat in bpy.data.materials:
+            if "lod0__" in mat.name:
+                texture = mat.name.split('__')[1]
+                mat.name = texture
+                normal_texture = texture.replace('.dds', '_bump.dds')
+                print("Texture found")
+                material = mat
+                #Setup material mode and keywords
+                material.use_nodes = True
+                material.blend_method = 'CLIP'
+                material.use_backface_culling = True
+                nodes = material.node_tree.nodes
+                new_link = material.node_tree.links.new
+
+                #Defining nodes
+                shader_node = material.node_tree.nodes["Principled BSDF"]
+                texture_image = nodes.new("ShaderNodeTexImage")
+                texture_image.location = (-506, 444)
+                #Check if texture file doesn't exist
+                file_check = Path(texture_path+texture)
+                if not file_check.exists():
+                    print("No texture file found;", texture)
+                else:
+                    print("Image found")
+                    texture_image.image = bpy.data.images.load(texture_path+texture)
+                normal_image = nodes.new("ShaderNodeTexImage")
+                normal_image.location = (-836, 124)
+                #Check if texture file doesn't exist
+                file_check = Path(texture_path+normal_texture)
+                if not file_check.exists():
+                    normal_texture = texture.replace('.dds', '_normal.dds')
+                    file_check = Path(texture_path+normal_texture)
+                    if not file_check.exists():
+                        print("No texture file found:", normal_texture)
+                    else:
+                        normal_image.image = bpy.data.images.load(texture_path+normal_texture)
+                        normal_image.image.colorspace_settings.name = 'Non-Color'
+                else:
+                    normal_image.image = bpy.data.images.load(texture_path+normal_texture)
+                    normal_image.image.colorspace_settings.name = 'Non-Color'
+                rgb_curve = nodes.new("ShaderNodeRGBCurve")
+                rgb_curve.location = (-506, 124)
+
+                #Flip the green channel
+                curve_g = rgb_curve.mapping.curves[1]
+                curve_g.points[0].location = (0, 1)
+                curve_g.points[1].location = (1, 0)
+                normal_map = nodes.new("ShaderNodeNormalMap")
+                normal_map.location = (-206, 124)
+                
+                #Linking nodes: colour -> shader; alpha -> shader; normal -> curves -> normal map -> shader
+                new_link(shader_node.inputs[0], texture_image.outputs[0])
+                new_link(shader_node.inputs[4], texture_image.outputs[1])
+                new_link(rgb_curve.inputs[1], normal_image.outputs[0])
+                new_link(normal_map.inputs[1], rgb_curve.outputs[0])
+                new_link(shader_node.inputs[5], normal_map.outputs[0])
+        
+        bpy.ops.object.select_all(action='DESELECT')
+        armature.select_set(True)
+        hide_variations()
+        multi_textured_check()
+        for rider in dae_model['engine'][1]:
+            infantry_importer(folder, dae_model, import_faction, x+float(rider[0]), y+float(rider[1]), z+float(rider[2]), upg_target)
         return(2)
 
 
