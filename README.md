@@ -6,7 +6,7 @@ This Blender addon provides a wide variety of tools to assist you in creating co
 
 ***
 
-[![Build Status](https://img.shields.io/github/v/release/EddieEldridge/Medieval-2-Toolkit?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases) [![Build Status](https://img.shields.io/github/downloads/WK-313/Medieval-2-Toolkit/total?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases)
+[![Build Status](https://img.shields.io/github/v/release/WK-313/Medieval-2-Toolkit?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases) [![Build Status](https://img.shields.io/github/downloads/WK-313/Medieval-2-Toolkit/total?style=for-the-badge)](https://github.com/WK-313/Medieval-2-Toolkit/releases)
 
 ## Table of Contents
 * [Features](#features)
@@ -31,7 +31,7 @@ For usage instructions, please refer to this [Google Doc](https://docs.google.co
 ## Installation
 
 ## 1. Download the release
-TBD - Update after first release
+Navigate to the [latest release](https://github.com/WK-313/Medieval-2-Toolkit/releases/latest) and download the zip file under the **Assets** section
 
 ## 2. Install the addon
 Point it at the downloaded .zip file
