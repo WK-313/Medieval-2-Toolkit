@@ -10,11 +10,16 @@ from pathlib import Path
 from ..directories import readJsonCached, saveFolderPaths, saveSettings
 from ..tasks import card_renderer
 from ..tasks.control_rig import CONTROL_RIG_TYPES, controlRigOf
-from ..tasks.card_renderer import (CAMERA_ORTHO_SCALE, CAMERA_TAG, CARD_LIGHT_TYPES, CARD_TYPE_ITEMS, FULL_SIZE_FOLDER,
-                                   HD_FOLDER, HD_PRESETS, LINE_ART_THICKNESS, MERC_FOLDER_NAMES,
-                                   SUN_STRENGTH, applyRenderSettings, buildRenderQueue, cardCameras, cardFolders,
+from ..tasks.card_renderer import (CAMERA_LENS, CAMERA_ORTHO_SCALE, CAMERA_PROJECTIONS, CAMERA_TAG,
+                                   CARD_AO_DISTANCE, CARD_LIGHT_TYPES, CARD_RENDER_MODES, CARD_TYPE_ITEMS,
+                                   CARD_WORLD_AMBIENT, FULL_SIZE_FOLDER,
+                                   HD_FOLDER, HD_PRESETS, LIGHT_AZIMUTH, LIGHT_DISTANCE, LIGHT_ELEVATION,
+                                   LINE_ART_THICKNESS, MERC_FOLDER_NAMES, SOLID_COLOURS, SOLID_LIGHTING,
+                                   SUN_STRENGTH, VIEW_TRANSFORMS,
+                                   applyRenderSettings, buildRenderQueue, cardCameras, cardFolders,
                                    cardOutputParts, cardResolution, cardSuns, createCardCameras, defaultCardFolders,
-                                   defaultLightStrength, deleteCardCameras, hdOrthoScale, hdResolution,
+                                   defaultLightStrength, deleteCardCameras, framingDistance, hdOrthoScale,
+                                   hdResolution,
                                    lineArtObjects, mercFolder, normalizeMercFolders, openRendersWindow,
                                    renderCard, renderedPaths, selectionCamera,
                                    setCardFolders, setupCardScene, shuffleImportedVariations,
@@ -59,12 +64,38 @@ def cardUnits(self, context):
     return _card_unit_enum_items
 
 
-def cardZoomChanged(self, context):
-    """Keep every card camera on the same framing while it is driven from here.
-    Individual cameras can still be tweaked afterwards - this only pushes when
-    the panel value moves."""
+def cardFramingChanged(self, context):
+    """Keep every card camera on the same framing while it is driven from here -
+    projection, lens and zoom all land here. Individual cameras can still be tweaked
+    afterwards; this only pushes when the panel value moves.
+
+    The lamp goes with them: it is placed relative to the point the camera frames, and
+    a perspective camera at a different zoom stands somewhere else entirely.
+    """
+    card_renderer.refreshCardCameras(context.scene, self)
+
+
+def cardLightPlacementChanged(self, context):
+    """Move every card lamp onto the panel's placement without touching the cameras."""
+    distance = framingDistance(self)
     for camera in cardCameras(context.scene):
-        camera.data.ortho_scale = self.card_zoom
+        card_renderer.placeCardLight(camera, self, distance)
+
+
+def lightDistanceChanged(self, context):
+    """Carry the exposure out with the lamp.
+
+    A point lamp is inverse-square, so dragging it from 6 units back to 12 without
+    this quarters the brightness of every card. The strength stays editable - this
+    only moves it when the distance itself moves, and a sun does not care about
+    distance at all.
+    """
+    previous = self.light_distance_previous
+    self.light_distance_previous = self.light_distance
+    if self.light_type == 'POINT' and previous > 0.01 and self.light_distance > 0.01:
+        ratio = self.light_distance/previous
+        self.sun_strength = round(self.sun_strength*ratio*ratio, 1)
+    cardLightPlacementChanged(self, context)
 
 
 def pushCardLight(scene):
@@ -74,13 +105,17 @@ def pushCardLight(scene):
     for light in cardSuns(scene):
         light.data.type = settings.light_type
         light.data.energy = settings.sun_strength
+        # only the lamp types with a size carry this, and the type may just have changed
+        if hasattr(light.data, 'shadow_soft_size'):
+            light.data.shadow_soft_size = card_renderer.LIGHT_RADIUS
 
 
 def cardLightTypeChanged(self, context):
-    """A sun at 500 blows every card out and a point lamp at 4 is black, so the
-    strength follows the type onto that type's usual value. It stays editable
-    afterwards - this only moves it when the type itself changes."""
-    self.sun_strength = defaultLightStrength(self.light_type)
+    """A sun at 2500 blows every card out and a point lamp at 4 is black, so the
+    strength follows the type onto that type's usual value - which for a point lamp
+    also depends on how far back it has been placed. It stays editable afterwards;
+    this only moves it when the type itself changes."""
+    self.sun_strength = defaultLightStrength(self.light_type, self.light_distance)
     pushCardLight(context.scene)
 
 
@@ -234,7 +269,29 @@ class MED_2_TOOLKIT_Card_Data(bpy.types.PropertyGroup):
                                                                     "back down, so everything after it - the sharpen especially - still acts at final "
                                                                     "card pixel size. 10 is the 480x640 render the old card .blend files used"),
                              default = 10, min = 1, max = 16)
-    render_samples: IntProperty(name = "Render samples", description = "EEVEE render samples used for the cards", default = 64, min = 1, soft_max = 512)
+    render_samples: IntProperty(name = "Render samples", description = ("EEVEE render samples used for the cards. In Solid mode it picks the nearest "
+                                                                        "Workbench anti-aliasing step instead"), default = 64, min = 1, soft_max = 512)
+    render_mode: EnumProperty(name = "Render mode", description = "Which engine draws the cards, and how much of the unit's shading it uses",
+                              items = CARD_RENDER_MODES, default = 'RENDERED')
+    solid_light: EnumProperty(name = "Solid lighting", description = "How Workbench shades the unit in Solid mode", items = SOLID_LIGHTING, default = 'FLAT')
+    solid_colour: EnumProperty(name = "Solid colour", description = "Where Workbench takes the unit's colour from in Solid mode", items = SOLID_COLOURS, default = 'TEXTURE')
+    view_transform: EnumProperty(name = "View transform", description = ("Tone mapping the finished card goes through. Blender 4.0 changed its own default "
+                                                                          "from Filmic to AgX, and AgX desaturates hard - so leaving this to the scene meant "
+                                                                          "cards that no longer looked like the reference .blend files they were set up from"),
+                                 items = VIEW_TRANSFORMS, default = 'Filmic')
+    use_ambient_occlusion: BoolProperty(name = "Ambient occlusion", description = ("Let EEVEE darken the creases - under a helmet rim, inside a mail collar, "
+                                                                                    "behind a shield strap. Both reference card files render with it on, and "
+                                                                                    "without it a unit at 48x64 flattens towards a silhouette"),
+                                        default = True)
+    ao_distance: FloatProperty(name = "AO distance", description = "How far the ambient occlusion reaches, in world units. Both reference files use 2.0",
+                               default = CARD_AO_DISTANCE, min = 0.0, soft_max = 20.0)
+    use_world_ambient: BoolProperty(name = "World fill light", description = ("Give the scene a flat grey world, which both reference card files carry. The "
+                                                                               "film is transparent so it never shows up on the card itself, but it still "
+                                                                               "lights the unit - it is what keeps the side facing away from the lamp off "
+                                                                               "pure black. A world somebody has actually built is never overwritten"),
+                                    default = True)
+    world_ambient: FloatProperty(name = "Fill", description = "Brightness of the grey world. The reference files use 0.05",
+                                 default = CARD_WORLD_AMBIENT, min = 0.0, soft_max = 1.0)
     save_full_size: BoolProperty(name = "Keep full-size render", description = ("Also save the render before the compositor scales it down to card size, as an "
                                                                                  "uncompressed PNG in a '%s' subfolder beside each card. It costs an extra "
                                                                                  "render pass per unit, with the rescale switched off" % FULL_SIZE_FOLDER),
@@ -291,7 +348,32 @@ class MED_2_TOOLKIT_Card_Data(bpy.types.PropertyGroup):
                                                                           "lowest point is below z=0 - so the card camera frames it like every other "
                                                                           "unit. A unit fully above the floor, or one parked below the scene, is left "
                                                                           "alone"), default = True)
-    card_zoom: FloatProperty(name = "Card zoom", description = "Orthographic width of the card cameras. Lower zooms in", default = CAMERA_ORTHO_SCALE, min = 0.01, soft_max = 10.0, update = cardZoomChanged)
+    camera_projection: EnumProperty(name = "Projection", description = ("How the card cameras see. Switching between the two keeps the framing: the "
+                                                                          "camera is moved along its own view axis so it still frames the box Zoom asks "
+                                                                          "for, only with or without foreshortening"),
+                                    items = CAMERA_PROJECTIONS, default = 'ORTHO', update = cardFramingChanged)
+    camera_lens: FloatProperty(name = "Lens", description = ("Focal length of the perspective card cameras, on Blender's default 36mm sensor. Both "
+                                                              "reference card files use 50mm. A longer lens stands the camera further back for the same "
+                                                              "framing, so the unit foreshortens less"),
+                               default = CAMERA_LENS, min = 1.0, soft_max = 300.0, update = cardFramingChanged)
+    card_zoom: FloatProperty(name = "Card zoom", description = ("Width of the card cameras' frame in world units, measured across the longer side. "
+                                                                 "Lower zooms in. It means the same thing in both projections"),
+                             default = CAMERA_ORTHO_SCALE, min = 0.01, soft_max = 10.0, update = cardFramingChanged)
+    light_distance: FloatProperty(name = "Light distance", description = ("How far back the lamp stands from the point the camera is framing. The old rig "
+                                                                           "parked it on the camera, which lights a unit dead flat; both reference card "
+                                                                           "files stand it about 5.8 units back instead. Moving a point lamp carries its "
+                                                                           "strength with it, so the card does not go dark"),
+                                  default = LIGHT_DISTANCE, min = 0.0, soft_max = 30.0, update = lightDistanceChanged)
+    light_elevation: FloatProperty(name = "Light elevation", description = ("How far above the camera's view axis the lamp is lifted, in degrees. The "
+                                                                             "reference card files sit about 22 degrees up"),
+                                   default = LIGHT_ELEVATION, min = -89.0, max = 89.0, update = cardLightPlacementChanged)
+    light_azimuth: FloatProperty(name = "Light angle", description = ("How far round to the side the lamp is swung, in degrees. Zero puts it straight "
+                                                                       "behind the camera, which is where both reference files leave it; off the axis is "
+                                                                       "what actually shapes a face"),
+                                 default = LIGHT_AZIMUTH, min = -180.0, max = 180.0, update = cardLightPlacementChanged)
+    # remembered so a distance change knows what it moved FROM, which is what lets a
+    # point lamp's strength follow it. Not drawn anywhere
+    light_distance_previous: FloatProperty(name = "Previous light distance", default = LIGHT_DISTANCE, options = {'HIDDEN'})
     card_faction: EnumProperty(name = "Faction", description = "Faction to import units for, and the card folder used by units with no card_pic_dir", items = sortFactions)
     card_filter: EnumProperty(name = "Ownership filter", description = "Unit ownership filter", items = OWNERSHIP_FILTERS, default = 1)
     card_upgrade: IntProperty(name = "Armour upgrade", description = "Armour upgrade level to import for the cards. Units without that level fall back to their last one", default = 0, min = 0, max = 3)
@@ -436,8 +518,7 @@ class MED_2_TOOLKIT_OT_Create_Card_Cameras(bpy.types.Operator):
             self.report({'ERROR'}, "Tick some units in the imported models list, or select an armature")
             return {'CANCELLED'}
         rig_type = settings.control_rig_type if settings.add_control_rig else None
-        results = createCardCameras(context, targets, settings.add_sun, settings.sun_strength,
-                                    settings.card_zoom, rig_type, settings.light_type,
+        results = createCardCameras(context, targets, settings, settings.add_sun, rig_type,
                                     settings.lift_sunken)
         results.append(('INFO', "Built from %d %s" % (len(targets), source)))
         reportResults(self, context, "Card cameras: %d unit(s)" % len(targets), results)
@@ -849,6 +930,28 @@ class MED_2_TOOLKIT_PT_Card_Scene(bpy.types.Panel):
         col.prop(settings, "supersample", text="Supersampling")
         col.prop(settings, "render_samples", text="Samples")
         col.label(text="Render %dx%d, card %dx%d" % (width*settings.supersample, height*settings.supersample, width, height), icon='RESTRICT_RENDER_OFF')
+
+        box = layout.box()
+        box.label(text="Render Mode", icon='SHADING_RENDERED')
+        col = box.column(align=True)
+        col.prop(settings, "render_mode", text="")
+        if settings.render_mode == 'SOLID':
+            row = col.row(align=True)
+            row.prop(settings, "solid_light", text="")
+            row.prop(settings, "solid_colour", text="")
+            col.label(text="Workbench: no lamp, no world, much faster", icon='INFO')
+        else:
+            row = col.row(align=True)
+            row.prop(settings, "use_ambient_occlusion", text="Ambient Occlusion", toggle=1)
+            sub = row.row(align=True)
+            sub.prop(settings, "ao_distance", text="")
+            sub.enabled = settings.use_ambient_occlusion
+            row = col.row(align=True)
+            row.prop(settings, "use_world_ambient", text="World Fill", toggle=1)
+            sub = row.row(align=True)
+            sub.prop(settings, "world_ambient", text="")
+            sub.enabled = settings.use_world_ambient
+        col.prop(settings, "view_transform", text="Colour")
         hd_width, hd_height = hdResolution(settings)
         col = layout.column(align=True)
         col.prop(settings, "save_hd", text="Keep HD %dx%d render" % (hd_width, hd_height), toggle=1)
@@ -856,8 +959,12 @@ class MED_2_TOOLKIT_PT_Card_Scene(bpy.types.Panel):
             col.prop(settings, "hd_preset", text="")
             col.label(text="A second render per unit, into '%s'" % HD_FOLDER, icon='IMAGE_DATA')
             col.label(text="Rescale and smoothing blur off for this pass")
-            col.label(text="Camera widens to %.2f so the card's framing still fits"
-                           % hdOrthoScale(settings, hd_width, hd_height))
+            span = hdOrthoScale(settings, hd_width, hd_height)
+            if settings.camera_projection == 'PERSP':
+                col.label(text="Lens shortens to %.0fmm so the card's framing still fits"
+                               % (settings.camera_lens*settings.card_zoom/span))
+            else:
+                col.label(text="Camera widens to %.2f so the card's framing still fits" % span)
         col.prop(settings, "save_full_size",
                  text="Keep %dx%d render too" % (width*settings.supersample, height*settings.supersample), toggle=1)
 
@@ -878,13 +985,25 @@ class MED_2_TOOLKIT_PT_Card_Scene(bpy.types.Panel):
         box = layout.box()
         box.label(text="Cameras, Lighting & Rigs", icon='CAMERA_DATA')
         col = box.column(align=True)
+        col.prop(settings, "camera_projection", text="")
+        if settings.camera_projection == 'PERSP':
+            col.prop(settings, "camera_lens", text="Lens")
         col.prop(settings, "card_zoom", text="Zoom")
+        if settings.camera_projection == 'PERSP':
+            col.label(text="Standing %.2f back to frame %.2f" % (framingDistance(settings), settings.card_zoom),
+                      icon='VIEW_PERSPECTIVE')
         row = col.row(align=True)
         row.prop(settings, "add_sun", text="Light", toggle=1)
         sub = row.row(align=True)
         sub.prop(settings, "light_type", text="")
         sub.prop(settings, "sun_strength", text="")
         sub.enabled = settings.add_sun
+        placement = col.column(align=True)
+        placement.enabled = settings.add_sun and settings.render_mode != 'SOLID'
+        placement.prop(settings, "light_distance", text="Light back")
+        row = placement.row(align=True)
+        row.prop(settings, "light_elevation", text="Up")
+        row.prop(settings, "light_azimuth", text="Round")
         row = col.row(align=True)
         row.prop(settings, "add_control_rig", text="Control Rig", toggle=1)
         sub = row.row(align=True)

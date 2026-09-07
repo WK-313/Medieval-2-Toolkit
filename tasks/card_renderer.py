@@ -27,7 +27,7 @@ import shutil
 import numpy as np
 from pathlib import Path
 
-from mathutils import Vector
+from mathutils import Euler, Vector
 
 from ..directories import readJsonCached
 from .control_rig import controlRigOf, controlledRigs, isControlRig
@@ -67,6 +67,31 @@ BLUR_NODE = "Card Smoothing"
 CAMERA_LOCATION = (0.016065, 2.67329, 1.633482)
 CAMERA_ROTATION = (1.4926, 0.0133, 3.146288)
 CAMERA_ORTHO_SCALE = 1.2
+
+# Perspective framing, read off gondor_infantry.blend and unit_card_blendfile.blend.
+# Both are a 50mm lens on Blender's default 36mm sensor, and both stand about 1.39
+# frame-heights back from the unit - which is exactly lens/sensor. So a perspective
+# card camera placed `card_zoom * lens / sensor` from the framing pivot frames the
+# same box an orthographic one frames at that zoom: the composition is unchanged and
+# only the foreshortening is added.
+CAMERA_LENS = 50.0
+CAMERA_SENSOR = 36.0
+
+CAMERA_PROJECTIONS = [
+    ('ORTHO', "Orthographic", "No perspective at all - the unit is drawn flat on, which is how the "
+                              "toolkit has always rendered cards. Zoom is the frame's width in world units"),
+    ('PERSP', "Perspective", "A real lens, so the unit foreshortens slightly - the setup "
+                             "gondor_infantry.blend and unit_card_blendfile.blend both use. Zoom keeps its "
+                             "meaning: the camera moves back or in to frame the same box"),
+]
+
+# Distance along the camera's own view axis from CAMERA_LOCATION to the point the
+# framing turns about. Solved from the pose above: it is where that axis crosses the
+# unit's centreline (y = 0), around chest-to-head height. An orthographic camera does
+# not care where along its axis it sits, a perspective one does, so both projections
+# are placed by holding this pivot still and sliding the camera along the axis - which
+# is what keeps the framing identical when the projection is switched.
+CAMERA_PIVOT_DISTANCE = 2.6812
 
 # Some skeletons import sunk into the ground: the model's own z offset lands the
 # unit half above and half below z=0. The card camera sits at a fixed height, so
@@ -233,6 +258,9 @@ def applyCameraGuide(camera_data, card_size):
 # Marker properties: a card camera and its sun carry the unit they belong to, so
 # the renderer can rebuild its queue from the scene alone.
 CAMERA_TAG = "med2_card_unit"
+# The world point a camera's framing turns about, stored so the projection and the
+# zoom can be changed later without having to find the unit again.
+PIVOT_TAG = "med2_card_pivot"
 FACTION_TAG = "med2_card_faction"
 SUN_TAG = "med2_card_sun"
 # The rig the camera was made for, by name. The renderer needs it to hide every
@@ -335,15 +363,328 @@ SUN_STRENGTH = 4.0
 # A point lamp is an inverse-square falloff at card distance, so it needs to be
 # orders of magnitude stronger than a sun to read the same.
 POINT_STRENGTH = 500.0
+# ...and POINT_STRENGTH is the figure for a lamp sitting ON the camera, which is where
+# the rig used to put it. Moving the lamp back has to carry the exposure with it.
+POINT_REFERENCE_DISTANCE = CAMERA_PIVOT_DISTANCE
 
 CARD_LIGHT_TYPES = [
-    ('SUN',   "Sun",   "Directional light, aimed the same way as the camera. Even across the whole unit"),
-    ('POINT', "Point", "Point lamp at the camera. Falls off with distance, so it picks out whatever is nearest"),
+    ('SUN',   "Sun",   "Directional light. Parallel rays, so it lights the unit evenly however far back it is placed"),
+    ('POINT', "Point", "Point lamp. Falls off with distance, so it picks out whatever is nearest - the lamp both reference card files use"),
 ]
 
+# Where the lamp stands, relative to the point the camera is framing. Taken from the
+# reference card files: unit_card_blendfile.blend and gondor_infantry.blend both park
+# a point lamp about 5.8 units from the unit and roughly 22 degrees above the camera's
+# axis, rather than on the camera itself. The swing round to the side is ours - both
+# files leave it at zero - but a key light off the axis is what actually shapes a
+# face, and it is one slider back to their setup.
+LIGHT_DISTANCE = 6.0
+LIGHT_ELEVATION = 25.0
+LIGHT_AZIMUTH = 25.0
+# Lamp radius, again off the reference files. A lamp with some size to it gives a
+# shadow edge that is not a hard line.
+LIGHT_RADIUS = 0.25
 
-def defaultLightStrength(light_type):
-    return POINT_STRENGTH if light_type == 'POINT' else SUN_STRENGTH
+
+def defaultLightStrength(light_type, distance=None):
+    """The strength a light type wants at `distance` from the unit.
+
+    A point lamp is inverse-square, so the strength that reads correctly on the
+    camera reads as near black six units back. POINT_STRENGTH is the on-camera
+    figure, and this carries it out to wherever the lamp has been moved to.
+    """
+    if light_type != 'POINT':
+        return SUN_STRENGTH
+    if distance is None:
+        distance = LIGHT_DISTANCE
+    ratio = max(distance, 0.01)/POINT_REFERENCE_DISTANCE
+    return round(POINT_STRENGTH*ratio*ratio, 1)
+
+
+#   ---------------------  #
+#   Camera and light rig   #
+#   ---------------------  #
+
+def cameraAxes(rotation=CAMERA_ROTATION):
+    """(forward, right, up) of a card camera at `rotation`, in world space.
+    Blender cameras look down their own -Z, with +X right and +Y up."""
+    matrix = Euler(tuple(rotation), 'XYZ').to_matrix()
+    return -matrix.col[2].normalized(), matrix.col[0].normalized(), matrix.col[1].normalized()
+
+
+def framingDistance(settings):
+    """How far a card camera stands from the point it is framing.
+
+    Fixed for an orthographic camera - it frames the same box wherever it sits, so it
+    stays where it has always been. A perspective one has to solve for it, and
+    lens/sensor is the whole of that: the frame is `distance * sensor / lens` across.
+    """
+    if settings.camera_projection != 'PERSP':
+        return CAMERA_PIVOT_DISTANCE
+    return settings.card_zoom*max(settings.camera_lens, 0.1)/CAMERA_SENSOR
+
+
+def cameraPivot(target_x):
+    """The world point a unit standing at `target_x` is framed about."""
+    forward = cameraAxes()[0]
+    base = Vector((target_x + CAMERA_LOCATION[0], CAMERA_LOCATION[1], CAMERA_LOCATION[2]))
+    return base + forward*CAMERA_PIVOT_DISTANCE
+
+
+def storedPivot(camera):
+    """The pivot a card camera was built around."""
+    pivot = camera.get(PIVOT_TAG)
+    if pivot is not None and len(pivot) == 3:
+        return Vector(tuple(pivot))
+    # a camera from before the pivot was stored is an orthographic one parked at
+    # CAMERA_LOCATION, so its pivot is the standard distance down its own axis
+    forward = cameraAxes(camera.rotation_euler)[0]
+    return camera.matrix_world.translation + forward*CAMERA_PIVOT_DISTANCE
+
+
+def placeCardCamera(camera, settings, pivot):
+    """Put a card camera on `pivot` with the projection and zoom `settings` ask for.
+
+    Returns how far from the pivot it ended up, which is what the lamp is then placed
+    against.
+    """
+    distance = framingDistance(settings)
+    camera.rotation_euler = CAMERA_ROTATION
+    camera.location = pivot - cameraAxes()[0]*distance
+    camera[PIVOT_TAG] = tuple(pivot)
+    data = camera.data
+    if settings.camera_projection == 'PERSP':
+        data.type = 'PERSP'
+        data.sensor_fit = 'AUTO'
+        data.sensor_width = CAMERA_SENSOR
+        data.lens = max(settings.camera_lens, 0.1)
+    else:
+        data.type = 'ORTHO'
+        data.ortho_scale = settings.card_zoom
+    return distance
+
+
+def lightPlacement(settings, distance=None):
+    """Where a card camera's lamp goes, in the camera's own space, and how it aims.
+
+    The old rig parked the lamp on the camera. That lights a unit dead flat - every
+    surface facing the lens gets the same amount, so nothing on the model reads as
+    round and a 48x64 card comes out looking like a decal. Both reference card files
+    stand the lamp well back and above the camera instead, which is what this is:
+    back down the view axis by `light_distance` from the point being framed, then
+    lifted by `light_elevation` and swung round by `light_azimuth`.
+
+    Camera space rather than world space on purpose - the lamp is parented to the
+    camera, so every unit in a faction-sized scene is lit identically however far
+    along X it happens to stand.
+    """
+    if distance is None:
+        distance = CAMERA_PIVOT_DISTANCE
+    elevation = math.radians(settings.light_elevation)
+    azimuth = math.radians(settings.light_azimuth)
+    # +Z in camera space points back towards the camera, +Y is up and +X is right
+    offset = Vector((math.cos(elevation)*math.sin(azimuth),
+                     math.sin(elevation),
+                     math.cos(elevation)*math.cos(azimuth)))*max(settings.light_distance, 0.0)
+    location = Vector((0.0, 0.0, -distance)) + offset
+    # a sun carries only a direction, so it has to be aimed back at what it lights
+    if offset.length > 1e-6:
+        rotation = (-offset).to_track_quat('-Z', 'Y').to_euler()
+    else:
+        rotation = Euler((0.0, 0.0, 0.0))
+    return location, rotation
+
+
+def cardLightOf(camera):
+    """The lamp belonging to a card camera, or None."""
+    return next((child for child in camera.children
+                 if child.type == 'LIGHT' and SUN_TAG in child), None)
+
+
+def placeCardLight(camera, settings, distance=None):
+    """Move a card camera's lamp onto the placement `settings` describe."""
+    light = cardLightOf(camera)
+    if light is None:
+        return None
+    location, rotation = lightPlacement(settings, distance)
+    # the lamp is placed in camera space, so a parent inverse left behind by somebody
+    # re-parenting it by hand would put it somewhere else entirely
+    light.matrix_parent_inverse.identity()
+    light.location = location
+    light.rotation_euler = rotation
+    return light
+
+
+def refreshCardCameras(scene, settings):
+    """Re-place every card camera and its lamp from the panel's framing and light
+    settings. This is what the live sliders drive - nothing is rebuilt, so a camera
+    moved off its unit by hand keeps the pivot it was moved to."""
+    for camera in cardCameras(scene):
+        distance = placeCardCamera(camera, settings, storedPivot(camera))
+        placeCardLight(camera, settings, distance)
+
+
+#   ------------------  #
+#   Render mode / look  #
+#   ------------------  #
+
+# Engine ids newest first: 4.2-4.5 called EEVEE Next BLENDER_EEVEE_NEXT, 5.x went back
+# to BLENDER_EEVEE, and older builds carry legacy EEVEE under that same name.
+# Whichever the running Blender accepts is the one used.
+EEVEE_ENGINES = ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE')
+WORKBENCH_ENGINE = 'BLENDER_WORKBENCH'
+
+CARD_RENDER_MODES = [
+    ('RENDERED', "Rendered", "EEVEE, with the unit's real materials, lighting and shadows - what both "
+                             "reference card files render with"),
+    ('SOLID', "Solid", "Workbench, the viewport's own Solid shading. Flat unlit texture colour by "
+                       "default, so the card comes out the colours the .dds is and no lighting can "
+                       "darken it. Far faster, and it needs no lamp at all"),
+]
+
+SOLID_LIGHTING = [
+    ('FLAT', "Flat", "No shading whatsoever - the texture's own colours, straight through"),
+    ('STUDIO', "Studio", "Workbench's built-in studio lights, so the unit still reads as solid"),
+    ('MATCAP', "Matcap", "Workbench's matcap shading"),
+]
+
+SOLID_COLOURS = [
+    ('TEXTURE', "Texture", "The unit's texture, which is what a card wants"),
+    ('MATERIAL', "Material", "Each material's flat base colour"),
+    ('OBJECT', "Object", "Each object's viewport display colour"),
+    ('SINGLE', "Single", "One colour for everything - a silhouette"),
+]
+
+# Workbench's anti-aliasing is a fixed set of sample counts, best first.
+SOLID_AA_STEPS = ('32', '16', '11', '8', '5')
+
+VIEW_TRANSFORMS = [
+    ('KEEP', "Scene default", "Leave the scene's own view transform alone"),
+    ('Standard', "Standard", "No tone mapping: the card comes out the colours the texture is. The "
+                             "safest choice for game UI art, which is composited over the game's own "
+                             "interface rather than looked at as a photograph"),
+    ('Filmic', "Filmic", "The transform gondor_infantry.blend and unit_card_blendfile.blend both "
+                         "render through - softer highlights, slightly muted colour"),
+    ('AgX', "AgX", "Blender 4.0+'s own default, and therefore what the toolkit rendered through "
+                   "before this setting existed. Rolls highlights off hardest and desaturates most, "
+                   "which on a 48x64 card reads as washed out"),
+    ('Khronos PBR Neutral', "PBR Neutral", "Khronos' transform: keeps colour close to the texture and "
+                                           "only rolls off the very brightest highlights"),
+    ('Raw', "Raw", "No transform whatsoever"),
+]
+
+# Ambient occlusion distance both reference files use.
+CARD_AO_DISTANCE = 2.0
+# Flat grey world both reference files carry. Transparent film keeps it off the card
+# itself, but it still lights the unit - it is the fill that stops the side facing
+# away from the lamp going to pure black.
+CARD_WORLD_AMBIENT = 0.05
+CARD_WORLD_NAME = "Medieval 2 Cards"
+
+
+def setRenderEngine(scene, candidates):
+    """Point the scene at the first of `candidates` this Blender has, and hand back
+    which one that was - or None if it has none of them."""
+    for engine in candidates:
+        try:
+            scene.render.engine = engine
+        except TypeError:
+            continue
+        return engine
+    return None
+
+
+def applyViewTransform(scene, name):
+    """Set the scene's view transform. Returns None, or a reason it could not.
+
+    Worth setting rather than leaving alone: Blender 4.0 changed the default from
+    Filmic to AgX, and AgX desaturates hard. Both reference card files are Filmic, and
+    neither was ever going to look like itself rendered through AgX.
+    """
+    if name == 'KEEP':
+        return None
+    try:
+        scene.view_settings.view_transform = name
+    except TypeError:
+        return ("This Blender has no '%s' view transform, so the cards render through '%s'"
+                % (name, scene.view_settings.view_transform))
+    return None
+
+
+def applyAmbientOcclusion(scene, enabled, distance=CARD_AO_DISTANCE):
+    """Switch EEVEE's ambient occlusion on or off, whichever EEVEE this is.
+
+    Both reference files render with it on at 2.0 - it is what puts the shadow under a
+    helmet rim and inside a mail collar, and without it a unit at 48x64 flattens
+    towards a silhouette. Legacy EEVEE calls it GTAO; EEVEE Next (4.2 onwards) folded
+    it into Fast GI, which only runs as part of the ray tracing pass.
+    """
+    eevee = getattr(scene, 'eevee', None)
+    if eevee is None:
+        return None
+    if hasattr(eevee, 'use_gtao'):
+        eevee.use_gtao = enabled
+        if enabled:
+            eevee.gtao_distance = distance
+        return 'gtao'
+    if hasattr(eevee, 'use_fast_gi'):
+        eevee.use_fast_gi = enabled
+        if enabled:
+            if hasattr(eevee, 'use_raytracing'):
+                eevee.use_raytracing = True
+            eevee.fast_gi_distance = distance
+            try:
+                eevee.fast_gi_method = 'AMBIENT_OCCLUSION_ONLY'
+            except TypeError:
+                pass
+        return 'fast_gi'
+    return None
+
+
+def applyWorldAmbient(scene, level):
+    """Give the scene a flat grey world at `level`. Returns None or a reason string.
+
+    Never overwrites a world somebody has actually built: a Background colour driven by
+    other nodes is left exactly as it is.
+    """
+    world = scene.world
+    if world is None:
+        world = bpy.data.worlds.new(CARD_WORLD_NAME)
+        scene.world = world
+    world.use_nodes = True
+    tree = world.node_tree
+    if tree is None:
+        return "The scene's world has no node tree, so the card fill light was left alone"
+    background = next((node for node in tree.nodes if node.bl_idname == 'ShaderNodeBackground'), None)
+    if background is None:
+        return "The scene's world has no Background node, so the card fill light was left alone"
+    if background.inputs['Color'].is_linked:
+        return ("The scene's world background is driven by other nodes, so the card fill light was "
+                "left alone")
+    background.inputs['Color'].default_value = (level, level, level, 1.0)
+    background.inputs['Strength'].default_value = 1.0
+    return None
+
+
+def applySolidShading(scene, settings):
+    """Set Workbench up for the Solid render mode. Returns the AA step it landed on."""
+    shading = scene.display.shading
+    shading.light = settings.solid_light
+    shading.color_type = settings.solid_colour
+    # a card is cut out of a transparent frame, so an outline drawn round the unit
+    # would end up baked into it
+    shading.show_object_outline = False
+    shading.show_specular_highlight = settings.solid_light != 'FLAT'
+    shading.show_shadows = False
+    shading.show_cavity = False
+    shading.show_xray = False
+    samples = max(1, settings.render_samples)
+    step = next((value for value in SOLID_AA_STEPS if int(value) <= samples), SOLID_AA_STEPS[-1])
+    try:
+        scene.display.render_aa = step
+    except TypeError:
+        pass
+    return step
 
 
 def cardCameras(scene):
@@ -396,10 +737,11 @@ def cameraTarget(scene, camera):
     if not candidates:
         return None
     deform = [obj for obj in candidates if not isControlRig(obj)] or candidates
-    # createCardCamera slides the camera to target.x + CAMERA_LOCATION[0], so the
-    # rig it frames is the one nearest that X - this is what keeps a collection
-    # holding several units from handing back the wrong one
-    aimed_at = camera.matrix_world.translation.x - CAMERA_LOCATION[0]
+    # every card camera is aimed at its own unit's X, so the rig it frames is the one
+    # nearest that X - this is what keeps a collection holding several units from
+    # handing back the wrong one. Measured off the stored pivot rather than the
+    # camera's own position, which a perspective camera slides along its view axis
+    aimed_at = storedPivot(camera).x - cameraPivot(0.0).x
     return min(deform, key=lambda obj: abs(obj.matrix_world.translation.x - aimed_at))
 
 
@@ -507,15 +849,18 @@ def selectionCamera(context):
     return None
 
 
-def createCardCamera(context, unit_id, faction, target, add_sun=True, light_strength=SUN_STRENGTH,
-                     ortho_scale=CAMERA_ORTHO_SCALE, light_type='SUN'):
-    """Build (or refresh) the camera - and its sun - that frames one unit.
+def createCardCamera(context, unit_id, faction, target, settings, add_sun=True):
+    """Build (or refresh) the camera - and its lamp - that frames one unit.
 
-    Every camera is the same pose slid along X onto its unit, which is the
-    framing the game's cards use. Each one keeps its own sun so a single unit can
-    be relit without touching the rest; the renderer hides all the other suns
-    while that unit is being rendered, because a sun lights the whole scene and
-    fifty of them pointing the same way would blow every card out.
+    Every camera is the same pose slid along X onto its unit, which is the framing
+    the game's cards use. Each one keeps its own lamp so a single unit can be relit
+    without touching the rest; the renderer hides all the other lamps while that unit
+    is being rendered, because fifty of them stacked on one scene would blow every
+    card out.
+
+    Projection, zoom and where the lamp stands all come off `settings` - see
+    placeCardCamera and placeCardLight, which are also what the panel's live sliders
+    drive through refreshCardCameras.
     """
     name = cameraName(unit_id)
     camera = bpy.data.objects.get(name)
@@ -531,35 +876,31 @@ def createCardCamera(context, unit_id, faction, target, add_sun=True, light_stre
     camera[CAMERA_TAG] = unit_id
     camera[FACTION_TAG] = faction
     camera[TARGET_TAG] = target.name
-    camera.rotation_euler = CAMERA_ROTATION
-    camera.location = (
-        target.matrix_world.translation.x + CAMERA_LOCATION[0],
-        CAMERA_LOCATION[1],
-        CAMERA_LOCATION[2],
-    )
-    camera.data.type = 'ORTHO'
-    camera.data.ortho_scale = ortho_scale
+    distance = placeCardCamera(camera, settings, cameraPivot(target.matrix_world.translation.x))
     # applied on a refresh too, not just on a new camera: one built under an
     # earlier card size is still carrying that size's guide alignment, and a
     # Refresh is how the user is expected to repair it
     applyCameraGuide(camera.data, cardResolution(context.scene.med2_toolkit_cards))
     camera.data.show_background_images = True
 
-    sun = next((child for child in camera.children if child.type == 'LIGHT' and SUN_TAG in child), None)
+    sun = cardLightOf(camera)
     if add_sun:
         if sun is None:
-            sun_data = bpy.data.lights.new(name + " Sun", type=light_type)
+            sun_data = bpy.data.lights.new(name + " Sun", type=settings.light_type)
             sun = bpy.data.objects.new(name + " Sun", sun_data)
             context.scene.collection.objects.link(sun)
             sun.parent = camera
-            sun.rotation_euler = (0, 0, 0)  # parented, so it inherits the camera's aim
         linkBeside(sun, target, context)
         sun[SUN_TAG] = unit_id
-        sun.data.type = light_type
-        sun.data.energy = light_strength
-        # sits on the camera, so it lights every unit the same way however far
-        # along X that unit sits
-        sun.location = (0.0, 0.0, 0.0)
+        sun.data.type = settings.light_type
+        sun.data.energy = settings.sun_strength
+        # a lamp with some size to it softens the shadow edge. Only the lamp types
+        # that have a size carry the property at all
+        if hasattr(sun.data, 'shadow_soft_size'):
+            sun.data.shadow_soft_size = LIGHT_RADIUS
+        # parented to the camera, so one placement lights every unit identically
+        # however far along X that unit stands
+        placeCardLight(camera, settings, distance)
     elif sun is not None:
         bpy.data.objects.remove(sun, do_unlink=True)
     return camera, created
@@ -1029,8 +1370,13 @@ def setupCompositor(context, rebuild=False):
     return group, results
 
 
-def applyRenderSettings(context):
-    """Push the card settings onto the scene. Returns (width, height, supersample)."""
+def applyRenderSettings(context, results=None):
+    """Push the card settings onto the scene. Returns (width, height, supersample).
+
+    `results` collects anything worth telling the user about the render mode - which
+    engine it landed on, a view transform this Blender does not have, a world it
+    would not overwrite. Left out when the caller has nowhere to show them.
+    """
     scene = context.scene
     settings = scene.med2_toolkit_cards
     width, height = cardResolution(settings)
@@ -1044,14 +1390,73 @@ def applyRenderSettings(context):
     scene.render.use_stamp = False
     scene.render.image_settings.file_format = 'TARGA'
     scene.render.image_settings.color_mode = 'RGBA'
-    try:
-        scene.eevee.taa_render_samples = settings.render_samples
-    except AttributeError:
-        pass
+    applyRenderMode(context, results)
     # the line art radius is derived from the card size and zoom, both of which
     # can have moved since the outline objects were made
     refreshLineArt(context)
     return width, height, supersample
+
+
+def applyRenderMode(context, results=None):
+    """Point the scene at the engine and the look the card settings ask for.
+
+    Solid is Workbench and needs nothing else - no lamp, no world, no tone mapping
+    worth speaking of. Rendered is EEVEE set up the way gondor_infantry.blend and
+    unit_card_blendfile.blend are: ambient occlusion on, shadows on, a flat grey world
+    for fill, and an explicitly chosen view transform rather than whatever this
+    Blender happens to default to.
+    """
+    scene = context.scene
+    settings = scene.med2_toolkit_cards
+    collect = results if results is not None else []
+    if settings.render_mode == 'SOLID':
+        engine = setRenderEngine(scene, (WORKBENCH_ENGINE,))
+        if engine is None:
+            collect.append(('WARNING', "This Blender has no Workbench engine, so Solid mode could not "
+                                       "be set - the cards render with whatever engine the scene is on"))
+            return
+        step = applySolidShading(scene, settings)
+        light = dict((item[0], item[1]) for item in SOLID_LIGHTING).get(settings.solid_light, settings.solid_light)
+        colour = dict((item[0], item[1]) for item in SOLID_COLOURS).get(settings.solid_colour, settings.solid_colour)
+        collect.append(('INFO', "Solid mode: Workbench, %s lighting on %s colour, %s samples of "
+                                "anti-aliasing" % (light.lower(), colour.lower(), step)))
+        # Workbench does its own thing with colour, but the view transform still sits
+        # on the end of it, so it is worth setting here too
+        reason = applyViewTransform(scene, settings.view_transform)
+        if reason is not None:
+            collect.append(('WARNING', reason))
+        return
+
+    engine = setRenderEngine(scene, EEVEE_ENGINES)
+    if engine is None:
+        collect.append(('WARNING', "This Blender has no EEVEE engine, so the cards render with "
+                                   "whatever engine the scene is on"))
+    try:
+        scene.eevee.taa_render_samples = settings.render_samples
+    except AttributeError:
+        pass
+    if hasattr(getattr(scene, 'eevee', None), 'use_shadows'):
+        scene.eevee.use_shadows = True
+    elif hasattr(getattr(scene, 'eevee', None), 'use_soft_shadows'):
+        scene.eevee.use_soft_shadows = True
+    reason = applyViewTransform(scene, settings.view_transform)
+    if reason is not None:
+        collect.append(('WARNING', reason))
+    elif settings.view_transform != 'KEEP':
+        collect.append(('INFO', "Rendering through the %s view transform" % settings.view_transform))
+    applyAmbientOcclusion(scene, settings.use_ambient_occlusion, settings.ao_distance)
+    if settings.use_ambient_occlusion:
+        collect.append(('INFO', "Ambient occlusion on at %.1f - the shadow under a helmet rim and "
+                                "inside a collar, which is what keeps a 48x64 card from flattening"
+                                % settings.ao_distance))
+    if settings.use_world_ambient:
+        reason = applyWorldAmbient(scene, settings.world_ambient)
+        if reason is not None:
+            collect.append(('WARNING', reason))
+        else:
+            collect.append(('INFO', "World fill light at %.3f grey - off the card itself, since the "
+                                    "film is transparent, but it lifts the unlit side of the unit"
+                                    % settings.world_ambient))
 
 
 def setupCardScene(context, rebuild=False, targets=None):
@@ -1062,7 +1467,7 @@ def setupCardScene(context, rebuild=False, targets=None):
     results = []
     _group, compositor_results = setupCompositor(context, rebuild)
     results.extend(compositor_results)
-    width, height, supersample = applyRenderSettings(context)
+    width, height, supersample = applyRenderSettings(context, results)
     if supersample > 1:
         results.append(('INFO', "Rendering %dx%d and scaling down to %dx%d" % (width*supersample, height*supersample, width, height)))
     else:
@@ -1079,9 +1484,8 @@ def setupCardScene(context, rebuild=False, targets=None):
     return results
 
 
-def createCardCameras(context, targets, add_sun=True, light_strength=SUN_STRENGTH,
-                      ortho_scale=CAMERA_ORTHO_SCALE, control_rig_type=None,
-                      light_type='SUN', lift_sunken=True):
+def createCardCameras(context, targets, settings, add_sun=True, control_rig_type=None,
+                      lift_sunken=True):
     """Give every (unit_id, faction, object) in `targets` its own card camera.
     Also lays down the compositor and render settings, so this one button is
     enough to go from imported units to renderable cards.
@@ -1111,8 +1515,7 @@ def createCardCameras(context, targets, add_sun=True, light_strength=SUN_STRENGT
             moved = liftSunkenUnit(context, model)
             if moved:
                 lifted.append((unit_id, moved))
-        _camera, is_new = createCardCamera(context, unit_id, faction, model, add_sun, light_strength,
-                                           ortho_scale, light_type)
+        _camera, is_new = createCardCamera(context, unit_id, faction, model, settings, add_sun)
         if is_new:
             created += 1
         else:
@@ -1131,10 +1534,21 @@ def createCardCameras(context, targets, add_sun=True, light_strength=SUN_STRENGT
         preview = ", ".join("%s +%.2f" % entry for entry in lifted[:4]) + (", ..." if len(lifted) > 4 else "")
         results.append(('WARNING', "Set %d unit(s) that were standing in the ground down on it: %s"
                         % (len(lifted), preview)))
+    projection = dict((item[0], item[1]) for item in CAMERA_PROJECTIONS).get(settings.camera_projection,
+                                                                              settings.camera_projection)
+    if settings.camera_projection == 'PERSP':
+        results.append(('INFO', "%s cameras: %.0fmm lens, standing %.2f from the unit to frame %.2f"
+                                % (projection, settings.camera_lens, framingDistance(settings),
+                                   settings.card_zoom)))
+    else:
+        results.append(('INFO', "%s cameras framing %.2f world units" % (projection, settings.card_zoom)))
     if add_sun:
-        label = dict(CARD_LIGHT_TYPES[i][:2] for i in range(len(CARD_LIGHT_TYPES))).get(light_type, light_type)
-        results.append(('INFO', "Each camera carries a %.1f strength %s light aimed the same way"
-                                % (light_strength, label.lower())))
+        label = dict((item[0], item[1]) for item in CARD_LIGHT_TYPES).get(settings.light_type,
+                                                                          settings.light_type)
+        results.append(('INFO', "Each camera carries a %.1f strength %s light %.1f back from the unit, "
+                                "%.0f deg above the view axis and %.0f deg round to the side"
+                                % (settings.sun_strength, label.lower(), settings.light_distance,
+                                   settings.light_elevation, settings.light_azimuth)))
     if control_rig_type is not None:
         results.append(('INFO', "Built %d control rig(s), %d armature(s) already had one" % (rigged, already_rigged)))
         if skipped_rigs:
@@ -1725,28 +2139,55 @@ def copyCard(source_path, paths):
     return None
 
 
-def saveHDRender(context, camera, hd_path, width, height, ortho_scale):
+def widenCamera(camera, frame_span, card_zoom):
+    """Re-frame a card camera onto `frame_span` world units across its longer side,
+    and hand back what to put it back to.
+
+    An orthographic camera carries that number directly. A perspective one keeps its
+    place and changes lens instead: moving it would change the foreshortening the card
+    was composed with, and lens is exact anyway - the camera stands
+    card_zoom*lens/sensor from the pivot, so framing `frame_span` from there wants
+    lens*card_zoom/frame_span. On an HD size that frames the same shape as the card,
+    frame_span equals card_zoom and neither is touched.
+    """
+    if camera is None or frame_span <= 0:
+        return None
+    data = camera.data
+    if data.type == 'PERSP':
+        previous = ('lens', data.lens)
+        data.lens = data.lens*card_zoom/frame_span
+        return previous
+    previous = ('ortho_scale', data.ortho_scale)
+    data.ortho_scale = frame_span
+    return previous
+
+
+def restoreCamera(camera, previous):
+    """Put back what widenCamera changed."""
+    if camera is None or previous is None:
+        return
+    setattr(camera.data, previous[0], previous[1])
+
+
+def saveHDRender(context, camera, hd_path, width, height, frame_span):
     """Render the same camera again at HD size and save it as a PNG.
 
-    A second pass rather than a scale-up of the card render: the card is 48x64
-    and no amount of resampling puts detail back. The camera's ortho scale is
-    widened for the pass and put back afterwards, for the HD sizes that frame a
-    different shape than the card does - see hdOrthoScale. The compositor's
-    rescale is switched off for the pass as well, since this render is wanted at
-    its own resolution rather than shrunk to card size - and so is the smoothing
-    blur, which is there to keep the card's nearest-neighbour downscale from
-    crawling and at HD size only costs detail.
+    A second pass rather than a scale-up of the card render: the card is 48x64 and no
+    amount of resampling puts detail back. The camera is widened for the pass and put
+    back afterwards, for the HD sizes that frame a different shape than the card does
+    - see hdOrthoScale and widenCamera. The compositor's rescale is switched off for
+    the pass as well, since this render is wanted at its own resolution rather than
+    shrunk to card size - and so is the smoothing blur, which is there to keep the
+    card's nearest-neighbour downscale from crawling and at HD size only costs detail.
     """
     scene = context.scene
     render = scene.render
     previous = (render.resolution_x, render.resolution_y)
-    previous_scale = camera.data.ortho_scale if camera is not None else None
+    previous_framing = widenCamera(camera, frame_span, scene.med2_toolkit_cards.card_zoom)
     previous_rescale = setRescale(scene, 1.0)
     previous_blur = setBlur(scene, False)
     render.resolution_x = width
     render.resolution_y = height
-    if camera is not None:
-        camera.data.ortho_scale = ortho_scale
     try:
         context.view_layer.update()
         bpy.ops.render.render(write_still=False)
@@ -1756,8 +2197,7 @@ def saveHDRender(context, camera, hd_path, width, height, ortho_scale):
         return saveFullSize(context, render_result, hd_path)
     finally:
         render.resolution_x, render.resolution_y = previous
-        if camera is not None and previous_scale is not None:
-            camera.data.ortho_scale = previous_scale
+        restoreCamera(camera, previous_framing)
         if previous_rescale is not None:
             setRescale(scene, previous_rescale)
         if previous_blur is not None:
