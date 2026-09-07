@@ -4,7 +4,7 @@ import math
 import os
 import time
 from pathlib import Path
-from bpy.props import BoolProperty, StringProperty, PointerProperty, CollectionProperty, EnumProperty, IntProperty
+from bpy.props import BoolProperty, StringProperty, PointerProperty, CollectionProperty, EnumProperty, IntProperty, FloatProperty
 from ..directories import saveFolderPaths, loadStoredValue, storeValue, readJsonCached
 from ..tasks.unit_exporter import exportArmatureGLB, exportToMeshIWTE, open_folder, selectedModFolder, defaultTaskTemplate, bmdbEntryText, normalFileName
 from ..tasks.export_checks import runSelectCleanup, exportMeshes, uniqueMaterials, materialImages, activeExportArmature, exportSettings, forceTextures, baseName, checkUVSpace, deselectAll, autoAssignMaterials, autoAssignUV, CLEANUP_PASSES
@@ -13,7 +13,7 @@ from ..tasks.iwte_run import (IWTE_OUTPUT_TIMEOUT, abortIWTEJob, finishIWTEJob,
                               hasSystemConsole, iwteOutputReady, iwteProgress,
                               iwteStalled, openSystemConsole, rearmStall,
                               redrawView3D, waitForIWTEJob)
-from ..tasks import bmdb_install, modeldb, iwte_tasks
+from ..tasks import bmdb_install, modeldb, iwte_tasks, normalmap
 
 script_folder = Path(__file__).parent.parent
 
@@ -46,13 +46,11 @@ def materialItemsNone(self, context):
     return _material_items_none
 
 
-def genBlankNormalsToggled(self, context):
-    """When Generate Blank Normal Maps is switched on, auto-fill the normal
-    output names as <main>_norm / <attach>_norm from the effective main and
-    attach texture names. Materials that already have a normal map keep their
-    output name untouched."""
-    if not self.gen_blank_normals:
-        return
+def fillNormalOutputNames(self):
+    """Auto-fill the normal output names as <main>_norm / <attach>_norm from the
+    effective main and attach texture names. Materials that already have a
+    normal map keep their output name untouched. Shared by both normal-map
+    toggles - either one needs a name to write its output under."""
     main_mat = bpy.data.materials.get(self.material_main) if self.material_main != 'none' else None
     attach_mat = bpy.data.materials.get(self.material_attach) if self.material_attach != 'none' else None
     main_diff, main_norm = materialImages(main_mat) if main_mat else (None, None)
@@ -81,6 +79,22 @@ def genBlankNormalsToggled(self, context):
         name = base_name(attach_diff, self.out_attach)
         if name:
             self.out_attach_norm = norm_name(name)
+
+
+def genBlankNormalsToggled(self, context):
+    """A blank and a generated normal map fill the same slot, so switching one
+    on switches the other off rather than leaving the export to pick."""
+    if not self.gen_blank_normals:
+        return
+    self["gen_normal_maps"] = False
+    fillNormalOutputNames(self)
+
+
+def genNormalMapsToggled(self, context):
+    if not self.gen_normal_maps:
+        return
+    self["gen_blank_normals"] = False
+    fillNormalOutputNames(self)
 
 
 # Kept alive at module level like the material items (GC guard). The unit
@@ -242,6 +256,10 @@ class MED_2_TOOLKIT_Unit_Export_Data(bpy.types.PropertyGroup):
     ignore_diffuse_alpha: BoolProperty(name = "Ignore Diffuse Alpha", description = "Write the main and attachment textures with a fully opaque alpha channel. The game reads the diffuse alpha as transparency, so a texture painted with an unused or half-empty alpha channel makes those parts of the unit see-through in game - this throws that alpha away. Leave it off when the alpha is a deliberate cutout (hair, chainmail gaps, banners). Normal maps are never touched: their alpha is the specular map, not a cutout", default = False)
     norm_main_file: StringProperty(name = "Main Normal File", description = "Normal map image on disk to use for the main texture when the material has no normal map wired in. It is converted to .dds and .texture with the rest of the export and named in the BMDB entry, so a normal map painted in an image editor needs no separate IWTE run. Leave the output name blank to keep the file's own name", subtype = 'FILE_PATH')
     norm_attach_file: StringProperty(name = "Attach Normal File", description = "Normal map image on disk to use for the attachment texture when the material has no normal map wired in. It is converted to .dds and .texture with the rest of the export and named in the BMDB entry, so a normal map painted in an image editor needs no separate IWTE run. Leave the output name blank to keep the file's own name", subtype = 'FILE_PATH')
+    gen_normal_maps: BoolProperty(name = "Generate Normal Maps", description = "Build a normal map from the diffuse for materials without one, instead of copying a blank. Uses the settings this project's textures were made with (4 sample filter, scale 4, min Z 0, invert X and Y). The generated alpha is the specular map, so the Brightness and Contrast below decide how shiny the unit comes out. Auto-fills the normal output names as <main>_norm / <attach>_norm", default = False, update = genNormalMapsToggled)
+    normal_scale: FloatProperty(name = "Scale", description = "How far the generated normals tilt, the plug-in's Scale box. Higher makes the texture's detail read as deeper and bumpier in game, lower flattens it out. 4 matches this project's existing normal maps", default = normalmap.DEFAULT_SCALE, min = 0.1, max = 20.0, soft_min = 0.5, soft_max = 10.0)
+    normal_brightness: FloatProperty(name = "Brightness", description = "Brightness of the generated specular, on GIMP's -127..127 Brightness-Contrast scale. Lower is duller - it scales the whole specular toward black, so less of the texture catches the light", default = normalmap.DEFAULT_BRIGHTNESS, min = -127.0, max = 127.0)
+    normal_contrast: FloatProperty(name = "Contrast", description = "Contrast of the generated specular, on GIMP's -127..127 Brightness-Contrast scale. Higher makes the bright parts shine harder while the rest stays dull, so the highlights read as sharper", default = normalmap.DEFAULT_CONTRAST, min = -127.0, max = 127.0)
     gen_blank_normals: BoolProperty(name = "Generate Blank Normal Maps", description = "Copy a blank normal map of matching size from the addon's normals folder for materials without one. Auto-fills the normal output names as <main>_norm / <attach>_norm", default = False, update = genBlankNormalsToggled)
     generate_bmdb: BoolProperty(name = "Generate BMDB Entry", description = "Build a battle_models.modeldb entry for this rig. Prefills the mesh path and copy-from unit with the last used values", default = False, update = generateBmdbToggled)
     bmdb_mode: EnumProperty(
@@ -1239,6 +1257,13 @@ class MED_2_TOOLKIT_PT_Export_Materials(bpy.types.Panel):
         # a file pointed at - a browsed file is used instead of a blank one
         if ((main_mat and not main_norm and not export_data.norm_main_file)
                 or (attach_mat and not attach_norm and not export_data.norm_attach_file)):
+            layout.prop(export_data, "gen_normal_maps")
+            if export_data.gen_normal_maps:
+                box = layout.box()
+                box.prop(export_data, "normal_scale")
+                box.label(text="Specular (normal map alpha)", icon='SHADING_RENDERED')
+                box.prop(export_data, "normal_brightness")
+                box.prop(export_data, "normal_contrast")
             layout.prop(export_data, "gen_blank_normals")
 
 

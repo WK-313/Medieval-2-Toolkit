@@ -10,6 +10,7 @@ from ..directories import loadStoredValue
 from .bmdb_writer import buildEntry, parseRelativeUnitPath, bmdbEntryNames
 from .iwte_run import NO_WINE, canRunWindowsExe, findIWTEExe, startIWTETask, usesWine, winePath, wineWrap
 from .iwte_tasks import applySkeletonTask
+from . import normalmap
 
 addon_folder = Path(__file__).parent.parent
 
@@ -83,6 +84,10 @@ def collect_textures(objects):
 
 DXT_FOURCCS = ('DXT1', 'DXT3', 'DXT5')
 
+# bytes one 4x4 block costs in each - DXT1 packs colour only, DXT3/DXT5 carry a
+# full alpha block alongside it
+DXT_BLOCK_BYTES = {'DXT1': 8, 'DXT3': 16, 'DXT5': 16}
+
 def ddsFourcc(path):
     """FourCC of a .dds file on disk. Uncompressed DDS files leave the field
     zeroed, so '' means "not DXT compressed" as much as "not a DDS"."""
@@ -95,21 +100,56 @@ def ddsFourcc(path):
         return ""
     return header[84:88].decode('ascii', errors='ignore').strip('\x00')
 
+def ddsMipChainBytes(width, height, block_bytes, levels):
+    """Bytes a DXT mip chain of `levels` levels occupies, base level included.
+    Each level halves both sides down to 1x1, and a level smaller than one 4x4
+    block still costs a whole block."""
+    total = 0
+    for _ in range(levels):
+        total += max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * block_bytes
+        if width == 1 and height == 1:
+            break
+        width = max(1, width // 2)
+        height = max(1, height // 2)
+    return total
+
 def ddsMipCount(path):
-    """Number of mip levels in a .dds on disk. 1 means the base image only.
+    """Number of mip levels a .dds on disk actually holds. 1 means the base
+    image only.
+
     dwMipMapCount is only meaningful when DDSD_MIPMAPCOUNT (0x20000) is set -
-    plenty of writers leave a stale count behind with the flag cleared."""
+    plenty of writers leave a stale count behind with the flag cleared. The
+    count is also only a promise about the data: a writer that strips the mips
+    but leaves the header alone produces a file claiming levels it does not
+    carry, and wrapping that as a .texture points the game at bytes past the
+    end of the file. So for DXT files the count is capped at what the data on
+    disk can actually supply."""
     try:
         with open(path, "rb") as dds_input:
-            header = dds_input.read(32)
+            header = dds_input.read(128)
     except OSError:
         return 0
-    if len(header) < 32 or header[0:4] != b'DDS ':
+    if len(header) < 128 or header[0:4] != b'DDS ':
         return 0
     flags, = struct.unpack("<I", header[8:12])
     if not flags & 0x20000:
         return 1
-    return max(1, struct.unpack("<I", header[28:32])[0])
+    declared = max(1, struct.unpack("<I", header[28:32])[0])
+
+    fourcc = header[84:88].decode('ascii', errors='ignore').strip('\x00')
+    block_bytes = DXT_BLOCK_BYTES.get(fourcc)
+    if not block_bytes:
+        # uncompressed and DX10-header files are recompressed on fourcc alone,
+        # so their declared count never has to be second-guessed here
+        return declared
+    height, width = struct.unpack("<2I", header[12:20])
+    try:
+        available = os.path.getsize(path) - 128
+    except OSError:
+        return declared
+    while declared > 1 and ddsMipChainBytes(width, height, block_bytes, declared) > available:
+        declared -= 1
+    return declared
 
 def runTexconv(texconv, source, tex_dir, out_base, opaque_alpha=False):
     """Convert an image to DXT5 with a full mipmap chain at tex_dir/out_base.dds
@@ -367,6 +407,44 @@ def generateBlankNormal(texconv, tex_dir, out_name, size):
         return "Blank normal %s: %s" % (out_name, warning)
     return None
 
+def generateNormalMap(texconv, tex_dir, out_name, diffuse, brightness, contrast,
+                      scale=normalmap.DEFAULT_SCALE):
+    """Build a normal map from a slot's diffuse image and convert it like any
+    other source file. Returns None on success or a reason string.
+
+    The .png is staged under the name the .texture will take, so textureFromFile
+    sees source and destination as the same file and skips its copy - exactly
+    where a browsed .png would have landed."""
+    try:
+        source = normalmap.imageToArray(diffuse)
+    except (RuntimeError, ValueError, MemoryError) as exc:
+        return "Normal map %s not generated: %s" % (out_name, exc)
+
+    built = normalmap.normalMapFromDiffuse(source, scale=scale,
+                                           brightness=brightness,
+                                           contrast=contrast)
+    staged = bpy.data.images.new(out_name + "_med2_gen",
+                                 built.shape[1], built.shape[0], alpha=True)
+    # a normal map is data, not a picture - Non-Color keeps the bytes written
+    staged.colorspace_settings.name = 'Non-Color'
+    png = os.path.join(tex_dir, out_name + ".png")
+    try:
+        normalmap.arrayToImage(built, staged)
+        staged.filepath_raw = png
+        staged.file_format = 'PNG'
+        staged.save()
+    except (RuntimeError, OSError) as exc:
+        return "Normal map %s not written: %s" % (out_name, exc)
+    finally:
+        bpy.data.images.remove(staged)
+
+    error, warning = textureFromFile(texconv, png, tex_dir, out_name)
+    if error:
+        return "Normal map %s not converted: %s" % (out_name, error)
+    if warning:
+        return "Normal map %s: %s" % (out_name, warning)
+    return None
+
 def bmdbEntryText(context, plan=None):
     """The battle_models.modeldb entry for the active rig's export settings.
 
@@ -557,7 +635,7 @@ def exportArmatureGLB(context):
     if texture_errors:
         notes.append("no .texture written for %s" % "; ".join(texture_errors))
     notes.extend(texture_warnings)
-    if export_data.gen_blank_normals:
+    if export_data.gen_blank_normals or export_data.gen_normal_maps:
         for slot, norm_out_prop in (('main', 'out_main_norm'), ('attach', 'out_attach_norm')):
             diffuse, _ = plan[slot]
             norm_image, _ = plan[slot + '_norm']
@@ -566,8 +644,13 @@ def exportArmatureGLB(context):
             # a browsed normal map has already been converted for this slot
             if diffuse is None or norm_image is not None or norm_file or not requested:
                 continue
-            size = diffuse.size[0]
-            error = generateBlankNormal(texconv, tex_dir, requested, size)
+            if export_data.gen_normal_maps:
+                error = generateNormalMap(texconv, tex_dir, requested, diffuse,
+                                          export_data.normal_brightness,
+                                          export_data.normal_contrast,
+                                          export_data.normal_scale)
+            else:
+                error = generateBlankNormal(texconv, tex_dir, requested, diffuse.size[0])
             if error:
                 notes.append(error)
 
